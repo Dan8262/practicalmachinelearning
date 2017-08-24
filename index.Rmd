@@ -1,0 +1,239 @@
+---
+title: 'Practical Machine Learning: Course Project'
+author: "DCA8262"
+date: "22/8/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.align = "center",
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+#### Synopsis
+
+This project is based on data provided by the team who performed the Weight Lifting Exercises experiment [REF 1].   
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).   
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.   
+Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate.   
+The six male participants weared sensors that recorded the position and movements of arm, forearm, belt and dumbbell in space (roll, pitch, yaw axis).   
+The aim of this project is to select several machine learning algorithms, evaluate them on a training set and apply the best-performing one to the test set.   
+
+```{r}
+# Initializing environment.
+rm(list = ls())
+
+# Initializing random generator.
+set.seed(1234)
+
+# Declaring libraries.
+library(knitr)
+library(corrplot)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(lattice)
+library(caret)
+library(gbm)
+library(randomForest)
+```
+
+### Downloading Data
+```{r}
+# Downloading .csv.bz2 file if necessary.
+urlTrainingFile <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+urlTestingFile <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+trainingFilename <- file.path("./pml-training.csv")
+testingFilename <- file.path("./pml-testing.csv")
+
+if (!file.exists(trainingFilename)) {
+  download.file(urlTrainingFile, trainingFilename, method = "curl")
+}
+
+if (!file.exists(testingFilename)) {
+  download.file(urlTestingFile, testingFilename, method = "curl")
+}
+
+# Loading trainingSet table.
+trainingSet <- read.csv(file = trainingFilename, header = TRUE, sep = ",", quote = "\"", fill = TRUE, na.strings = c("", "#DIV/0!", "NA"))
+
+# Loading testingSet table.
+testingSet <- read.csv(file = testingFilename, header = TRUE, sep = ",", quote = "\"", fill = TRUE, na.strings = c("", "#DIV/0!", "NA"))
+```
+
+### Cleaning Data
+All variables that contain more than 50% of missing values are dropped of the data sets. We also remove the first seven variables that are dedicated to identification and dating.   
+```{r}
+# Removing variables with missing values ratio above 50% in data sets (same result for ratio from 50% to 80%).
+nrowTrainingSet <- nrow(trainingSet)
+trainingSet <- trainingSet[lapply(trainingSet, function(x) sum(is.na(x)) / nrowTrainingSet) < 0.5]
+
+# Removing variables dedicated to identification and chronology as we suppose
+#  their impact on predictions is very low.
+trainingSet <- trainingSet[-c(1:7)]
+```
+
+### Correlation Analyse
+At this step, we still have `r dim(trainingSet)[2]` variables in our filtered data set. An analyse of the correlation matrix will help us in order to eliminate highly correlated variables from the data set.   
+```{r fig.width=8, fig.height=8}
+# Building and displaying correlation matrix.
+correlMatrix <- cor(trainingSet[, -53])
+corrplot(correlMatrix, 
+         method = "color", 
+         order="hclust", 
+         type = "upper", 
+         tl.cex = .6,
+         tl.col = "black",
+         title="Figure 1: Correlation Matrix",
+         mar=c(0,0,1,0)) # http://stackoverflow.com/a/14754408/54964
+```
+
+The correlation matrix highlights several highly correlated variables, so additional investigation will be performed.   
+```{r}
+# Looking for variables to remove.
+varToRemove <- findCorrelation(correlMatrix, cutoff = 0.8, verbose = FALSE, names = TRUE)
+```
+The result of the findCorrelation function allows us to reduce the number of variables (53 -> 40).   
+Now we can define the definitive list of variables in the training and testing sets.   
+The initial training set is splitted in a new training data set (70%) and a validation data set (30%).   
+```{r}
+trainingSet <- trainingSet[, !colnames(trainingSet) %in% varToRemove]
+
+# Synchronizing testing set structure with training set.
+testingSet <- testingSet[, colnames(trainingSet[, -40])] # "classe" variable dropped.
+
+# Splitting the training set.
+indexesTrain <- createDataPartition(trainingSet$classe, p = 0.7, list = FALSE)
+evalTrainingSet <- trainingSet[indexesTrain, ]
+evalValidationSet <- trainingSet[-indexesTrain, ]
+```
+
+### Models Evaluation
+Three models have been tested for this project:   
+* Random Forest (RF)   
+* Gradient Boosted Machine (GBM)   
+* Support Vector Machine (SVM)   
+
+#### Model 1: RF (Random Forest)
+```{r}
+# Preparing training scheme.
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+
+# Training the RF model.
+set.seed(1234)
+modelRF <- train(classe ~ ., method = "rf", trControl = control, data = evalTrainingSet)
+predRF <- predict(modelRF, evalValidationSet)
+confMatrixRF <-confusionMatrix(predRF, evalValidationSet$classe)
+confMatrixRF
+```
+
+#### Model 2: GBM (Gradient Boosted Machine)
+```{r}
+# Training the GBM model.
+set.seed(1234)
+modelGBM <- train(classe ~ ., method = "gbm", trControl = control, data = evalTrainingSet, verbose = FALSE)
+predGBM <- predict(modelGBM, evalValidationSet)
+confMatrixGBM <-confusionMatrix(predGBM, evalValidationSet$classe)
+confMatrixGBM
+```
+
+#### Model 3: SVM (Support Vector Machine)
+```{r}
+# Training the SVM model.
+set.seed(1234)
+modelSVM <- train(classe ~ ., method = "svmRadial", trControl = control, data = evalTrainingSet)
+predSVM <- predict(modelSVM, evalValidationSet)
+confMatrixSVM <-confusionMatrix(predSVM, evalValidationSet$classe)
+confMatrixSVM
+```
+
+#### Comparison of the three models
+```{r echo = FALSE}
+# Confusion matrix for the RF model.
+dfConfMatrixTableRF <- as.data.frame(confMatrixRF$table)
+ggplot1 <- ggplot(data =  dfConfMatrixTableRF, mapping = aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = Freq), colour = "gray") +
+  geom_text(aes(label = sprintf("%d", Freq)), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "red") +
+  xlab("Predicted Class") + ylab("Actual Class") + 
+  ggtitle("Confusion Matrix for the RF Model") +
+  theme_bw() + theme(legend.position = "right", plot.title = element_text(hjust = 0.5))
+
+# Confusion matrix for the GBM model.
+dfConfMatrixTableGBM <- as.data.frame(confMatrixGBM$table)
+ggplot2 <- ggplot(data =  dfConfMatrixTableGBM, mapping = aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = Freq), colour = "gray") +
+  geom_text(aes(label = sprintf("%d", Freq)), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "red") +
+  xlab("Predicted Class") + ylab("Actual Class") + 
+  ggtitle("Confusion Matrix for the GBM Model") +
+  theme_bw() + theme(legend.position = "right", plot.title = element_text(hjust = 0.5))
+
+# Confusion matrix for the SVM model.
+dfConfMatrixTableSVM <- as.data.frame(confMatrixSVM$table)
+ggplot3 <- ggplot(data =  dfConfMatrixTableSVM, mapping = aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = Freq), colour = "gray") +
+  geom_text(aes(label = sprintf("%d", Freq)), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "red") +
+  xlab("Predicted Class") + ylab("Actual Class") + 
+  ggtitle("Confusion Matrix for the SVM Model") +
+  theme_bw() + theme(legend.position = "right", plot.title = element_text(hjust = 0.5))
+
+#blankText <- textGrob("")
+title2=textGrob("Figure 2: Confusion Matrices", gp=gpar(fontface="bold"))
+#grid.arrange(ggplot1, ggplot2, ggplot3, blankText, top = title2, layout_matrix = matrix(c(1,2,3,4), ncol=2, byrow=TRUE))
+grid.arrange(ggplot1, ggplot2, ggplot3, title2, layout_matrix = matrix(c(1,2,3,4), ncol=2, byrow=TRUE))
+```
+
+Each model has 30 results (3 repeats of 10-fold cross validation). The objective of comparing results is to compare the accuracy distributions (30 values) between the models.   
+
+This is done in three ways. The distributions are summarized in terms of the percentiles. The distributions are summarized as box plots and finally the distributions are summarized as dot plots.   
+
+```{r}
+# Collecting resamples.
+results <- resamples(list(RF=modelRF, GBM=modelGBM, SVM=modelSVM))
+```
+Table 1: Summarizing the distributions for each model:   
+```{r}
+# Summarizing the distributions.
+summary(results)
+```
+```{r echo = FALSE, fig.height=7}
+# Displaying bwplot and dotplot.
+plot1 <- bwplot(results, main = "Figure 3: Comparison of the Models Results")
+plot2 <- dotplot(results)
+print(plot1, split = c(1, 1, 1, 2), more = TRUE)
+print(plot2, split = c(1, 2, 1, 2), more = FALSE)
+
+# Accuracies by model.
+accuracyRF <- round(confMatrixRF$overall[1] * 100, 2)
+accuracyGBM <- round(confMatrixGBM$overall[1] * 100, 2)
+accuracySVM <- round(confMatrixSVM$overall[1] * 100, 2)
+```
+Accuracy for the RF model is `r accuracyRF`%.   
+Accuracy for the GBM model is `r accuracyGBM`%.   
+Accuracy for the SVM model is `r accuracySVM`%.   
+
+The validation subset gives an unbiased estimate of the Random Forest algorithm’s prediction accuracy (`r accuracyRF`%). The Random Forest’s out-of-sample error rate (`r 100 - accuracyRF`%) is derived by the formula `1 - Accuracy`, or can be calculated directly by the following lines of code:
+```
+missClass = function(values, prediction) {
+    sum(prediction != values)/length(values)
+}
+errorRate <- missClass(evalValidationSet$classe, predRF)
+```
+
+### Predicting results on the testing data set
+Considering the previous results, the RF model will be applied to the 20 observations of the testing set.   
+```{r}
+predTestingSet <- predict(modelRF, testingSet)
+predTestingSet
+```
+
+#### References
+[REF 1]   
+*Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H.*   
+**Qualitative Activity Recognition of Weight Lifting Exercises.**   
+Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.   
+URL: http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises
